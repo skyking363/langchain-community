@@ -446,13 +446,20 @@ class PyPDFParser(BaseBlobParser):
 
                     # Handle cases where Filter might be a list or a single NameObject
                     if isinstance(img_filter_obj, pypdf.generic.ArrayObject):
-                        # Taking the first filter if multiple are present, common for e.g. FlateDecode
                         if not img_filter_obj: # Empty filter array
-                             logger.warning(f"PyPDFParser: Skipping image ({obj_name}) due to empty /Filter array.")
-                             continue
-                        img_filter = img_filter_obj[0].name[1:] if img_filter_obj[0].name else ""
+                            logger.warning(f"PyPDFParser: Skipping image ({obj_name}) due to empty /Filter array.")
+                            continue
+                        # Get the first filter name from the array
+                        first_filter_in_array = img_filter_obj[0]
+                        if isinstance(first_filter_in_array, pypdf.generic.NameObject):
+                            filter_val = str(first_filter_in_array)
+                            img_filter = filter_val[1:] if filter_val.startswith("/") else filter_val
+                        else:
+                            logger.warning(f"PyPDFParser: Skipping image ({obj_name}) as first element in /Filter array is not a NameObject: {type(first_filter_in_array)}.")
+                            continue
                     elif isinstance(img_filter_obj, pypdf.generic.NameObject):
-                        img_filter = img_filter_obj.name[1:] if img_filter_obj.name else ""
+                        filter_val = str(img_filter_obj)
+                        img_filter = filter_val[1:] if filter_val.startswith("/") else filter_val
                     else:
                         logger.warning(f"PyPDFParser: Skipping image ({obj_name}) due to unknown /Filter type: {type(img_filter_obj)}.")
                         continue
