@@ -468,7 +468,43 @@ class PyPDFParser(BaseBlobParser):
                         logger.warning(f"PyPDFParser: Skipping image ({obj_name}) due to missing or empty /Filter name.")
                         continue
 
-                    if img_filter in _PDF_FILTER_WITHOUT_LOSS:
+                    # Define a new list for filters best handled by Pillow
+                    _FILTERS_HANDLED_BY_PILLOW = _PDF_FILTER_WITH_LOSS + [
+                        "CCITTFaxDecode", "CCF",
+                        "JBIG2Decode",
+                    ]
+
+                    if img_filter in _FILTERS_HANDLED_BY_PILLOW:
+                        try:
+                            pil_img_from_bytes = Image.open(io.BytesIO(raw_data))
+                            # Convert to RGB if it's not, common for JPEGs that might be CMYK etc.
+                            # For CCITTFaxDecode, this might convert 1-bit to L or RGB.
+                            if pil_img_from_bytes.mode not in ("L", "RGB", "RGBA", "1"): # Added "1" for 1-bit images
+                                pil_img_from_bytes = pil_img_from_bytes.convert("RGB")
+                            np_image = np.array(pil_img_from_bytes)
+                            image_data_processed = True
+                            # Determine channels from PIL image mode
+                            if pil_img_from_bytes.mode == "1" or pil_img_from_bytes.mode == "L":
+                                pil_channels = 1
+                            elif pil_img_from_bytes.mode == "RGBA":
+                                pil_channels = 4
+                            else: # Primarily RGB
+                                pil_channels = 3
+                        except Exception as e:
+                            logger.warning(
+                                f"PyPDFParser: Could not open image ({obj_name}) "
+                                f"with filter {img_filter} using Pillow: {e}"
+                            )
+                            continue
+                    elif img_filter in _PDF_FILTER_WITHOUT_LOSS: # Filters not in _FILTERS_HANDLED_BY_PILLOW
+                        # Ensure CCITTFaxDecode and JBIG2Decode are not processed here
+                        if img_filter in ["CCITTFaxDecode", "CCF", "JBIG2Decode"]:
+                             logger.warning(
+                                 f"PyPDFParser: Filter {img_filter} for image ({obj_name}) "
+                                 "should have been handled by Pillow. Skipping direct reshape."
+                             )
+                             continue
+
                         height = int(xObject[obj_name]["/Height"])
                         width = int(xObject[obj_name]["/Width"])
                         actual_size = len(raw_data)
