@@ -469,39 +469,70 @@ class PyPDFParser(BaseBlobParser):
                         continue
 
                     # Define a new list for filters best handled by Pillow
-                    _FILTERS_HANDLED_BY_PILLOW = _PDF_FILTER_WITH_LOSS + [
-                        "CCITTFaxDecode", "CCF",
-                        "JBIG2Decode",
-                    ]
+                    # This includes lossy filters, 1-bit fax/jbig2, and common generic
+                    # compression filters that might wrap actual image file formats (e.g., PNG).
+                    _FILTERS_HANDLED_BY_PILLOW = (
+                        _PDF_FILTER_WITH_LOSS +
+                        [
+                            "CCITTFaxDecode", "CCF",
+                            "JBIG2Decode",
+                            "FlateDecode", "Fl",        # Added FlateDecode
+                            "LZWDecode", "LZW",        # Added LZWDecode
+                            "RunLengthDecode", "RL",    # Added RunLengthDecode
+                        ]
+                    )
+                    # ASCII85Decode and ASCIIHexDecode are typically encoding layers for binary data,
+                    # not image formats themselves. The data *after* these decodes would then
+                    # be subject to further filtering (e.g. FlateDecode then DCTDecode).
+                    # pypdf's get_data() should handle these base encodings.
+                    # So, _PDF_FILTER_WITHOUT_LOSS will now be much smaller, primarily for cases
+                    # where data might truly be raw pixels after ASCII/Hex decode, if any.
 
                     if img_filter in _FILTERS_HANDLED_BY_PILLOW:
                         try:
                             pil_img_from_bytes = Image.open(io.BytesIO(raw_data))
-                            # Convert to RGB if it's not, common for JPEGs that might be CMYK etc.
-                            # For CCITTFaxDecode, this might convert 1-bit to L or RGB.
-                            if pil_img_from_bytes.mode not in ("L", "RGB", "RGBA", "1"): # Added "1" for 1-bit images
+                            # Convert mode if necessary to ensure consistency for np.array
+                            # and channel detection.
+                            # Common modes after open: 1, L, P (palette), RGB, RGBA, CMYK, YCbCr
+                            if pil_img_from_bytes.mode == "P": # Palette
+                                # Convert P to RGBA or RGB to handle transparency and simplify
+                                pil_img_from_bytes = pil_img_from_bytes.convert("RGBA" if "transparency" in pil_img_from_bytes.info else "RGB")
+                            elif pil_img_from_bytes.mode not in ("1", "L", "RGB", "RGBA"):
+                                # For other modes like CMYK, YCbCr, etc., convert to RGB
                                 pil_img_from_bytes = pil_img_from_bytes.convert("RGB")
+
                             np_image = np.array(pil_img_from_bytes)
                             image_data_processed = True
-                            # Determine channels from PIL image mode
+
+                            # Determine channels from the (potentially converted) PIL image mode
                             if pil_img_from_bytes.mode == "1" or pil_img_from_bytes.mode == "L":
                                 pil_channels = 1
                             elif pil_img_from_bytes.mode == "RGBA":
                                 pil_channels = 4
-                            else: # Primarily RGB
+                            elif pil_img_from_bytes.mode == "RGB": # Covers P converted to RGB, CMYK to RGB etc.
                                 pil_channels = 3
+                            else:
+                                # This case should ideally not be reached if conversions above are comprehensive
+                                logger.warning(f"PyPDFParser: Image ({obj_name}, filter {img_filter}) has an unexpected mode '{pil_img_from_bytes.mode}' after Pillow processing. Attempting 3 channels.")
+                                pil_channels = 3 # Default assumption
+
                         except Exception as e:
                             logger.warning(
-                                f"PyPDFParser: Could not open image ({obj_name}) "
+                                f"PyPDFParser: Could not open/process image ({obj_name}) "
                                 f"with filter {img_filter} using Pillow: {e}"
                             )
                             continue
-                    elif img_filter in _PDF_FILTER_WITHOUT_LOSS: # Filters not in _FILTERS_HANDLED_BY_PILLOW
-                        # Ensure CCITTFaxDecode and JBIG2Decode are not processed here
-                        if img_filter in ["CCITTFaxDecode", "CCF", "JBIG2Decode"]:
+                    elif img_filter in _PDF_FILTER_WITHOUT_LOSS:
+                        # This path is now for filters NOT in _FILTERS_HANDLED_BY_PILLOW.
+                        # Given the expansion of _FILTERS_HANDLED_BY_PILLOW, this branch
+                        # will be hit less often. It might apply to ASCIIHex/ASCII85 if they
+                        # were the *only* filter and the result was raw pixel data, or other
+                        # very specific uncompressed formats not typically wrapped by Flate etc.
+                        # The safeguard below is now more general.
+                        if img_filter in _FILTERS_HANDLED_BY_PILLOW: # Safeguard
                              logger.warning(
                                  f"PyPDFParser: Filter {img_filter} for image ({obj_name}) "
-                                 "should have been handled by Pillow. Skipping direct reshape."
+                                 "was unexpectedly routed to reshape path (safeguard). Skipping."
                              )
                              continue
 
